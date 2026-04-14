@@ -1,11 +1,19 @@
 # ChuniJudgeVisualizer
 CHUNITHMの譜面の判定を表示させるツール。
+
 [__こちら__](https://trackcomplete.github.io/ChuniJudgeVisualizer/ChuniJudgeVisualizer.html)
 
 ## 概要
 餡蜜チェッカーの譜面版あったらおもしろいな～って適当に作ったもの。
 
 製作者はあまりCHUNITHMの仕様を理解してないので間違っているかもしれません。
+
+個人用に作ってたので動作の保証はしません。
+
+## 使い方
+右の譜面入力に文字をぶち込んだらあら不思議。左側に出るではありませんか。
+（入力形式はsimai語を参考にさせていただきました。）
+配置可能なものはTAP、ExTAP、HOLDの3つだけです。
 
 ## 参考
 仕様を参考にしたサイトをあげておきます。
@@ -19,4 +27,4 @@ CHUNITHMの譜面の判定を表示させるツール。
 
 - 絶起 さん
 
-  [【CHUNITHM小話】縦連判定って何よ、というお話【解説】](https://youtu.be/HViDhH2BtNY?si=Ar9TtkwpRlmWQAYe)
+  [【CHUNITHM小話】縦連判定って何よ、というお話【解説】](https://youtu.be/HViDhH2BtNY)
