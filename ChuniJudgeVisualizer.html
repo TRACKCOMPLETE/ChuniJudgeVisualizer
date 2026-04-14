@@ -57,6 +57,8 @@
       justify-content: center;
       align-items: flex-start;
       touch-action: none;
+      overflow: hidden;
+      padding: 0;
     }
 
     canvas {
@@ -189,6 +191,9 @@
     let scrollY = 0;
     let touchDragging = false;
     let lastTouchY = 0;
+    let lastTouchTime = 0;
+    let touchVelocity = 0;
+    let inertiaFrame = null;
 
     function resize() {
       canvas.width = 800;
@@ -210,6 +215,32 @@
 
       const visibleCssHeight = Math.min(canvasRect.height, containerRect.height);
       return canvas.height * (visibleCssHeight / canvasRect.height);
+    }
+
+    function stopInertiaScroll() {
+      if (inertiaFrame !== null) {
+        cancelAnimationFrame(inertiaFrame);
+        inertiaFrame = null;
+      }
+    }
+
+    function startInertiaScroll() {
+      stopInertiaScroll();
+
+      const tick = () => {
+        if (Math.abs(touchVelocity) < 0.02) {
+          touchVelocity = 0;
+          inertiaFrame = null;
+          return;
+        }
+
+        scrollY += touchVelocity * 16;
+        touchVelocity *= 0.92;
+        draw();
+        inertiaFrame = requestAnimationFrame(tick);
+      };
+
+      inertiaFrame = requestAnimationFrame(tick);
     }
 
     function hexToNum(c) {
@@ -781,6 +812,7 @@
 
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
+      stopInertiaScroll();
 
       // ▼ カメラを動かす（これだけ）
       scrollY += e.deltaY * 0.5;
@@ -791,23 +823,33 @@
     canvas.addEventListener("touchstart", (e) => {
       if (e.touches.length !== 1) return;
 
+      stopInertiaScroll();
       touchDragging = true;
       lastTouchY = e.touches[0].clientY;
+      lastTouchTime = performance.now();
+      touchVelocity = 0;
     }, { passive: true });
 
     canvas.addEventListener("touchmove", (e) => {
       if (!touchDragging || e.touches.length !== 1) return;
 
       e.preventDefault();
+      const currentTime = performance.now();
       const currentTouchY = e.touches[0].clientY;
       const deltaY = currentTouchY - lastTouchY;
+      const deltaTime = Math.max(1, currentTime - lastTouchTime);
 
       scrollY -= deltaY * 2;
+      touchVelocity = (-deltaY * 2) / deltaTime;
       lastTouchY = currentTouchY;
+      lastTouchTime = currentTime;
       draw();
     }, { passive: false });
 
     const endTouchDrag = () => {
+      if (touchDragging && Math.abs(touchVelocity) >= 0.02) {
+        startInertiaScroll();
+      }
       touchDragging = false;
     };
 
