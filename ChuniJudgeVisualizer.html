@@ -56,6 +56,7 @@
       display: flex;
       justify-content: center;
       align-items: flex-start;
+      touch-action: none;
     }
 
     canvas {
@@ -186,6 +187,8 @@
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
     let scrollY = 0;
+    let touchDragging = false;
+    let lastTouchY = 0;
 
     function resize() {
       canvas.width = 800;
@@ -784,6 +787,32 @@
 
       draw();
     });
+
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+
+      touchDragging = true;
+      lastTouchY = e.touches[0].clientY;
+    }, { passive: true });
+
+    canvas.addEventListener("touchmove", (e) => {
+      if (!touchDragging || e.touches.length !== 1) return;
+
+      e.preventDefault();
+      const currentTouchY = e.touches[0].clientY;
+      const deltaY = currentTouchY - lastTouchY;
+
+      scrollY -= deltaY * 2;
+      lastTouchY = currentTouchY;
+      draw();
+    }, { passive: false });
+
+    const endTouchDrag = () => {
+      touchDragging = false;
+    };
+
+    canvas.addEventListener("touchend", endTouchDrag);
+    canvas.addEventListener("touchcancel", endTouchDrag);
 
     renderToggleControls();
     draw();
