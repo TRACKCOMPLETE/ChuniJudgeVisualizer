@@ -1,0 +1,793 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <title>ChuniJudgeVisualizer</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #aaa;
+      font-family: sans-serif;
+    }
+
+    /* 中央寄せ用コンテナ */
+    .wrapper {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    /* ヘッダー */
+    .header {
+      background: #666;
+      color: white;
+      padding: 15px;
+      text-align: center;
+      font-size: 20px;
+      font-weight: bold;
+      border-radius: 10px;
+      margin: 10px;
+    }
+
+    /* PCレイアウト */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 10px;
+      margin: 10px;
+    }
+
+    /* 共通のボックス */
+    .box {
+      background: #ddd;
+      border-radius: 10px;
+      padding: 10px;
+      min-width: 0;
+    }
+
+    /* キャンバス */
+    .canvas-box {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+
+    canvas {
+      width: 100%;
+      max-width: 400px;
+      /* ここで見た目サイズを制御 */
+      height: auto;
+      background: #222;
+      border-radius: 10px;
+      display: block;
+      margin: 0 auto;
+    }
+
+    /* テキスト入力欄 */
+    textarea {
+      width: 100%;
+      height: 120px;
+      resize: none;
+      max-width: 100%;
+    }
+
+    /* ボタン */
+    .buttons {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    button {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    /* スマホ用設定 */
+    .details {
+      display: none;
+    }
+
+    /* ▼ スマホレイアウト */
+    @media (max-width: 767px) {
+      .wrapper {
+        max-width: 100%;
+      }
+
+      .main {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .canvas-box {
+        height: 300px;
+        overflow: hidden;
+        align-items: flex-start;
+      }
+
+      .details {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+
+      .pc-only {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="wrapper">
+
+    <div class="header">CHUNITHM判定帯可視化ツール</div>
+
+    <div class="main">
+
+      <!-- キャンバス -->
+      <div class="box canvas-box">
+        <canvas id="canvas"></canvas>
+      </div>
+
+      <!-- 右側 -->
+      <div class="side">
+
+        <!-- テキスト入力欄 -->
+        <div class="box">
+          <textarea id="input" placeholder="譜面入力"></textarea>
+        </div>
+
+        <!-- ボタン -->
+        <div class="box buttons">
+          <button id="helpBtn">ヘルプ</button>
+          <button id="saveBtn">保存</button>
+        </div>
+
+        <!-- PCチェックボックス -->
+        <div class="box pc-only">
+          <label><input type="checkbox" id="showNotes" checked> ノーツ</label><br>
+          <label><input type="checkbox" id="showJudge" checked> 判定</label>
+        </div>
+
+        <!-- ノーツ一覧 -->
+        <div class="box" style="max-height: 300px; overflow-y: auto; font-size: 12px;">
+          <div id="notesList" style="font-family: monospace; white-space: pre-wrap; word-break: break-all;"></div>
+        </div>
+
+        <!-- スマホ用ドロワー -->
+        <details class="box details">
+          <summary>表示設定</summary>
+          <label><input type="checkbox" id="showNotes" checked> ノーツ</label><br>
+          <label><input type="checkbox" id="showJudge" checked> 判定</label>
+        </details>
+
+      </div>
+
+    </div>
+
+    <!-- ヘルプ -->
+    <div id="help" class="box" style="display:none; margin:10px;">
+      ここに説明を書く
+    </div>
+
+  </div>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    let scrollY = 0;
+
+    function resize() {
+      canvas.width = 800;
+      canvas.height = 1200;
+      draw();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    function getVisibleCanvasHeight() {
+      const canvasRect = canvas.getBoundingClientRect();
+      const containerRect = canvas.parentElement
+        ? canvas.parentElement.getBoundingClientRect()
+        : canvasRect;
+
+      if (canvasRect.height <= 0) {
+        return canvas.height;
+      }
+
+      const visibleCssHeight = Math.min(canvasRect.height, containerRect.height);
+      return canvas.height * (visibleCssHeight / canvasRect.height);
+    }
+
+    function hexToNum(c) {
+      if (c >= '1' && c <= '9') return c.charCodeAt(0) - 48;
+      return c.charCodeAt(0) - 55;
+    }
+
+    function getSafeBpm(value, fallback = 120) {
+      const bpm = Number(value);
+      return Number.isFinite(bpm) && bpm > 0 ? bpm : fallback;
+    }
+
+    function readBpmFromInput(input, fallback = 120) {
+      let bpm = fallback;
+      const lines = input.split("\n");
+
+      for (let line of lines) {
+        if (line.startsWith("# bpm")) {
+          const parts = line.trim().split(/\s+/);
+          bpm = getSafeBpm(parts[2], fallback);
+        }
+      }
+
+      return bpm;
+    }
+
+    function parse(input) {
+      input = input.replace(/\n/g, "");
+
+      let bpm = 120;
+      let div = 4;
+      let time = 0;
+      let divisionIndex = 0;
+
+      const notes = [];
+
+      const beatTime = () => 60000 / bpm;
+      const measureTime = () => beatTime() * 4;
+
+      const tokens = input.split(/(\{.*?\}|,)/).filter(t => t !== "");
+
+      for (let token of tokens) {
+
+        if (token.startsWith("#")) {
+          const parts = token.trim().split(/\s+/);
+          if (parts[1] === "bpm") bpm = getSafeBpm(parts[2], bpm);
+          continue;
+        }
+
+        if (token.startsWith("{")) {
+          const m = token.match(/\{(\d+)\}/);
+          if (m) {
+            div = Number(m[1]);
+            divisionIndex = 0;
+          }
+          continue;
+        }
+
+        if (token === ",") {
+          time += measureTime() / div;
+          divisionIndex++;
+          continue;
+        }
+
+        const groups = token.split("/");
+
+        for (let g of groups) {
+          if (!g) continue;
+
+          // ▼ Exノーツは末尾にe付き
+          const isEx = g.endsWith("e");
+          if (isEx) g = g.slice(0, -1);
+
+          let lane = hexToNum(g[0]);
+          let width = hexToNum(g[1]);
+
+          let hold = 0;
+
+          if (g.includes("h")) {
+            const m = g.match(/h\[(\d+):(\d+)\]/);
+            if (m) {
+              const base = Number(m[1]);
+              const count = Number(m[2]);
+              hold = (4 / base) * count;
+            }
+          }
+
+          notes.push({
+            time,
+            lane,
+            width,
+            hold,
+            isEx,
+            div,
+            divIndex: divisionIndex
+          });
+        }
+      }
+
+      return notes;
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    function drawGridDynamic(
+      ctx,
+      canvas,
+      padding,
+      scrollY,
+      pxPerBeat,
+      startLineY,
+      minBeat,
+      maxBeat
+    ) {
+      const laneCount = 16;
+      const usableWidth = canvas.width - padding * 2;
+      const laneWidth = usableWidth / laneCount;
+
+      // 邵ｦ邱・
+      for (let i = 0; i <= laneCount; i++) {
+        const x = padding + i * laneWidth;
+
+        ctx.lineWidth = (i === 0 || i === laneCount) ? 3 : 1;
+        ctx.strokeStyle = (i === 0 || i === laneCount)
+          ? "rgba(255,255,255,0.5)"
+          : "rgba(255,255,255,0.2)";
+
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+
+      // 讓ｪ邱・
+      const startIndex = Math.floor(minBeat);
+      const endIndex = Math.ceil(maxBeat);
+
+      for (let i = startIndex; i <= endIndex; i++) {
+        const y =
+          startLineY -
+          (i - minBeat) * pxPerBeat -
+          scrollY;
+
+        if (y < 0 || y > canvas.height) continue;
+
+        ctx.lineWidth = (i % 4 === 0) ? 2 : 1;
+        ctx.strokeStyle = (i % 4 === 0)
+          ? "rgba(255,255,255,0.4)"
+          : "rgba(255,255,255,0.15)";
+
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(canvas.width - padding, y);
+        ctx.stroke();
+      }
+    }
+
+    function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+      return Math.max(aStart, bStart) < Math.min(aEnd, bEnd);
+    }
+
+    function getJudgeWindows() {
+      const bpm225BeatMs = 60000 / 225;
+      return {
+        attack: 100,
+        justice: bpm225BeatMs / 4,
+        justiceCritical: bpm225BeatMs / 8
+      };
+    }
+
+    function buildJudgeAreas(notes, laneWidth, offsetX) {
+      const noteAreas = notes.map((note, index) => ({
+        note,
+        index,
+        x: (note.lane - 1) * laneWidth + offsetX,
+        w: note.width * laneWidth,
+        start: note.time,
+        end: note.time
+      }));
+
+      const sorted = [...noteAreas].sort((a, b) => a.note.time - b.note.time);
+
+      for (let i = 0; i < sorted.length; i++) {
+        const current = sorted[i];
+        const judgeWindows = getJudgeWindows();
+
+        current.start = current.note.time - judgeWindows.attack;
+        current.end = current.note.time + judgeWindows.attack;
+
+        for (let j = i - 1; j >= 0; j--) {
+          const prev = sorted[j];
+
+          if (prev.end <= current.start) {
+            break;
+          }
+
+          if (!rangesOverlap(current.x, current.x + current.w, prev.x, prev.x + prev.w)) {
+            continue;
+          }
+
+          const split = (prev.note.time + current.note.time) / 2;
+          current.start = Math.max(current.start, split);
+          prev.end = Math.min(prev.end, split);
+        }
+      }
+
+      return noteAreas;
+    }
+
+    function buildCriticalSegments(notes, laneWidth, offsetX) {
+      const windows = getJudgeWindows();
+      const noteRects = notes.map(note => ({
+        x: (note.lane - 1) * laneWidth + offsetX,
+        w: note.width * laneWidth
+      }));
+
+      return notes.map((note, index) => {
+        const rect = noteRects[index];
+        const criticalHalf = note.isEx ? windows.attack : windows.justiceCritical;
+        const attackHalf = windows.attack;
+        const boundaries = [rect.x, rect.x + rect.w];
+        const overlaps = [];
+
+        for (let otherIndex = 0; otherIndex < notes.length; otherIndex++) {
+          if (otherIndex === index) continue;
+
+          const other = notes[otherIndex];
+          const otherRect = noteRects[otherIndex];
+          const overlapStartX = Math.max(rect.x, otherRect.x);
+          const overlapEndX = Math.min(rect.x + rect.w, otherRect.x + otherRect.w);
+
+          if (overlapStartX >= overlapEndX) {
+            continue;
+          }
+
+          const split = (note.time + other.time) / 2;
+          const hasAttackOverlap =
+            Math.max(note.time - attackHalf, other.time - attackHalf) <
+            Math.min(note.time + attackHalf, other.time + attackHalf);
+
+          if (!hasAttackOverlap) {
+            continue;
+          }
+
+          boundaries.push(overlapStartX, overlapEndX);
+          overlaps.push({
+            startX: overlapStartX,
+            endX: overlapEndX,
+            split,
+            isEarlier: other.time < note.time,
+            isLater: other.time > note.time
+          });
+        }
+
+        const uniqueBoundaries = [...new Set(boundaries)].sort((a, b) => a - b);
+        const segments = [];
+
+        for (let i = 0; i < uniqueBoundaries.length - 1; i++) {
+          const startX = uniqueBoundaries[i];
+          const endX = uniqueBoundaries[i + 1];
+          if (endX <= startX) continue;
+
+          const sampleX = (startX + endX) / 2;
+          let start = note.time - criticalHalf;
+          let end = note.time + criticalHalf;
+
+          for (const overlap of overlaps) {
+            if (sampleX < overlap.startX || sampleX > overlap.endX) {
+              continue;
+            }
+
+            if (overlap.isEarlier) {
+              start = Math.max(start, overlap.split);
+            } else if (overlap.isLater) {
+              end = Math.min(end, overlap.split);
+            }
+          }
+
+          if (end > start) {
+            segments.push({ startX, endX, start, end });
+          }
+        }
+
+        return segments;
+      });
+    }
+
+    function renderToggleControls() {
+      const controlsHtml = `
+        <label><input type="checkbox" class="toggle-show-notes" checked> ノーツ</label><br>
+        <label><input type="checkbox" class="toggle-show-attack" checked> ATTACK</label><br>
+        <label><input type="checkbox" class="toggle-show-justice" checked> JUSTICE</label><br>
+        <label><input type="checkbox" class="toggle-show-critical" checked> JUSTICE CRITICAL</label>
+      `;
+
+      const pcControls = document.querySelector(".pc-only");
+      if (pcControls) {
+        pcControls.innerHTML = controlsHtml;
+      }
+
+      const mobileControls = document.querySelector(".details");
+      if (mobileControls) {
+        mobileControls.innerHTML = `<summary>表示設定</summary>${controlsHtml}`;
+      }
+    }
+
+    function isToggleChecked(className) {
+      const toggle = document.querySelector(`.${className}`);
+      return toggle ? toggle.checked : true;
+    }
+
+    function syncToggleInputs(changedInput) {
+      const toggleClass = [...changedInput.classList].find(name => name.startsWith("toggle-"));
+      if (!toggleClass) return;
+
+      for (let input of document.querySelectorAll(`.${toggleClass}`)) {
+        input.checked = changedInput.checked;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const padding = 80;
+
+      const input = document.getElementById("input").value;
+      const notes = parse(input);
+
+      const showNotes = isToggleChecked("toggle-show-notes");
+      const showAttack = isToggleChecked("toggle-show-attack");
+      const showJustice = isToggleChecked("toggle-show-justice");
+      const showCritical = isToggleChecked("toggle-show-critical");
+
+      const bpm = readBpmFromInput(input, 120);
+
+      const beatMs = 60000 / bpm;
+      const measureMs = beatMs * 4;
+
+      // 縦方向の拡大率
+      const pxPerMeasure = 1280;
+
+      const usableWidth = canvas.width - padding * 2;
+      const laneWidth = usableWidth / 16;
+      const offsetX = padding;
+      const judgeWindows = getJudgeWindows();
+      const judgeAreas = buildJudgeAreas(notes, laneWidth, offsetX);
+      const criticalSegmentsList = buildCriticalSegments(notes, laneWidth, offsetX);
+
+      let minMeasure = Infinity;
+      let maxMeasure = -Infinity;
+
+      for (let n of notes) {
+        const m = n.time / measureMs;
+        minMeasure = Math.min(minMeasure, m);
+        maxMeasure = Math.max(maxMeasure, m + n.hold / 4);
+      }
+
+      if (minMeasure === Infinity) {
+        minMeasure = 0;
+        maxMeasure = 1;
+      }
+
+      const marginMeasure = 1 / 8;
+      const contentStartMeasure = minMeasure - marginMeasure;
+      const contentEndMeasure = maxMeasure + marginMeasure;
+      const gridStartMeasure = Math.floor(contentStartMeasure);
+      const gridEndMeasure = Math.ceil(contentEndMeasure);
+
+      const contentHeight = (contentEndMeasure - contentStartMeasure) * pxPerMeasure;
+
+      // =========================
+      // ▼ スクロール範囲（上下に少し余白）
+      // =========================
+
+      const visibleCanvasHeight = getVisibleCanvasHeight();
+
+      const minScroll = 0;
+      const maxScroll = Math.max(0, contentHeight - visibleCanvasHeight + padding * 2);
+
+      scrollY = Math.max(minScroll, Math.min(maxScroll, scrollY));
+
+      // =========================
+      // ▼ グリッド
+      // =========================
+
+      for (let i = 0; i <= 16; i++) {
+        const x = padding + i * laneWidth;
+
+        ctx.lineWidth = (i === 0 || i === 16) ? 3 : 1;
+        ctx.strokeStyle = (i === 0 || i === 16)
+          ? "rgba(255,255,255,0.5)"
+          : "rgba(255,255,255,0.2)";
+
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+
+      for (let m = gridStartMeasure; m <= gridEndMeasure; m++) {
+
+        let worldY = (m - contentStartMeasure) * pxPerMeasure;
+
+        // paddingぶん表示位置を調整
+        let y = contentHeight - worldY - scrollY + padding;
+
+        if (y >= -padding && y <= canvas.height + padding) {
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "rgba(255,255,255,0.4)";
+          ctx.beginPath();
+          ctx.moveTo(padding, y);
+          ctx.lineTo(canvas.width - padding, y);
+          ctx.stroke();
+        }
+
+        for (let b = 1; b < 4; b++) {
+          const subY = y - b * (pxPerMeasure / 4);
+
+          if (subY >= -padding && subY <= canvas.height + padding) {
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = "rgba(255,255,255,0.15)";
+            ctx.beginPath();
+            ctx.moveTo(padding, subY);
+            ctx.lineTo(canvas.width - padding, subY);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // =========================
+      // ▼ ノーツ
+      // =========================
+      for (let i = 0; i < notes.length; i++) {
+        const n = notes[i];
+        const judgeArea = judgeAreas[i];
+        const criticalSegments = criticalSegmentsList[i];
+        const m = n.time / measureMs;
+        const worldY = (m - contentStartMeasure) * pxPerMeasure;
+
+        const y = contentHeight - worldY - scrollY + padding;
+
+        const x = judgeArea.x;
+        const w = judgeArea.w;
+
+        // ▼ 色
+        const color = n.isEx ? "yellow" : "red";
+
+        // ▼ 判定
+        if (showAttack || showJustice || showCritical) {
+          const attackTop = contentHeight - ((judgeArea.end / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+          const attackBottom = contentHeight - ((judgeArea.start / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+
+          const justiceTop = contentHeight - (((n.time + judgeWindows.justice) / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+          const justiceBottom = contentHeight - (((n.time - judgeWindows.justice) / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+          const criticalTopBase = n.isEx ? (n.time + judgeWindows.attack) : (n.time + judgeWindows.justiceCritical);
+          const criticalBottomBase = n.isEx ? (n.time - judgeWindows.attack) : (n.time - judgeWindows.justiceCritical);
+          const criticalTop = contentHeight - ((criticalTopBase / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+          const criticalBottom = contentHeight - ((criticalBottomBase / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+
+          if (n.isEx) {
+            // ExはJCのみ表示
+          } else {
+            const justiceDrawTop = Math.max(attackTop, justiceTop);
+            const justiceDrawBottom = Math.min(attackBottom, justiceBottom);
+            const criticalDrawTop = Math.max(attackTop, criticalTop);
+            const criticalDrawBottom = Math.min(attackBottom, criticalBottom);
+
+            if (showAttack && justiceDrawTop > attackTop) {
+              ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
+              ctx.fillRect(x, attackTop, w, justiceDrawTop - attackTop);
+            }
+
+            if (showAttack && attackBottom > justiceDrawBottom) {
+              ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
+              ctx.fillRect(x, justiceDrawBottom, w, attackBottom - justiceDrawBottom);
+            }
+
+            if (showJustice && criticalDrawTop > justiceDrawTop) {
+              ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
+              ctx.fillRect(x, justiceDrawTop, w, criticalDrawTop - justiceDrawTop);
+            }
+
+            if (showJustice && justiceDrawBottom > criticalDrawBottom) {
+              ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
+              ctx.fillRect(x, criticalDrawBottom, w, justiceDrawBottom - criticalDrawBottom);
+            }
+          }
+
+          if (showCritical) {
+            ctx.fillStyle = "rgba(255, 255, 170, 0.5)";
+
+            for (const segment of criticalSegments) {
+              const segmentTop = contentHeight - ((segment.end / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+              const segmentBottom = contentHeight - ((segment.start / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+              const segmentWidth = segment.endX - segment.startX;
+
+              ctx.fillRect(segment.startX, segmentTop, segmentWidth, segmentBottom - segmentTop);
+            }
+          }
+        }
+
+        // ▼ ノーツ（角丸）
+        if (showNotes) {
+          ctx.fillStyle = color;
+          roundRect(ctx, x, y - 5, w, 10, 4);
+          ctx.fill();
+        }
+
+        // ▼ ホールド
+        if (n.hold > 0) {
+          const holdMeasure = n.hold / 4;
+          const holdHeight = holdMeasure * pxPerMeasure;
+
+          ctx.fillStyle = "orange";
+          roundRect(
+            ctx,
+            x,
+            y - holdHeight,
+            w,
+            holdHeight,
+            4
+          );
+          ctx.fill();
+        }
+      }
+    }
+
+    document.addEventListener("input", draw);
+    document.addEventListener("change", (e) => {
+      if (e.target.matches('input[type="checkbox"]')) {
+        syncToggleInputs(e.target);
+      }
+      draw();
+    });
+
+    document.getElementById("saveBtn").onclick = () => {
+      const url = canvas.toDataURL();
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "chart.png";
+      a.click();
+    };
+
+    const helpBtn = document.getElementById("helpBtn");
+    const helpDiv = document.getElementById("help");
+
+    helpBtn.onclick = (e) => {
+      e.stopPropagation();
+      helpDiv.style.display = helpDiv.style.display === "block" ? "none" : "block";
+    };
+
+    document.addEventListener("click", (e) => {
+      if (helpDiv.style.display === "block" && !helpDiv.contains(e.target) && e.target !== helpBtn) {
+        helpDiv.style.display = "none";
+      }
+    });
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+
+      // ▼ カメラを動かす（これだけ）
+      scrollY += e.deltaY * 0.5;
+
+      draw();
+    });
+
+    renderToggleControls();
+    draw();
+  </script>
+
+</body>
+
+</html>
