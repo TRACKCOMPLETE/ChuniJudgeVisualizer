@@ -258,10 +258,8 @@
       const lines = input.split("\n");
 
       for (let line of lines) {
-        if (line.startsWith("# bpm")) {
-          const parts = line.trim().split(/\s+/);
-          bpm = getSafeBpm(parts[2], fallback);
-        }
+        const m = line.match(/^\s*#\s*bpm\s+([0-9]+(?:\.[0-9]+)?)/i);
+        if (m) bpm = getSafeBpm(m[1], fallback);
       }
 
       return bpm;
@@ -285,8 +283,8 @@
       for (let token of tokens) {
 
         if (token.startsWith("#")) {
-          const parts = token.trim().split(/\s+/);
-          if (parts[1] === "bpm") bpm = getSafeBpm(parts[2], bpm);
+          const m = token.match(/^\s*#\s*bpm\s+([0-9]+(?:\.[0-9]+)?)/i);
+          if (m) bpm = getSafeBpm(m[1], bpm);
           continue;
         }
 
@@ -423,117 +421,135 @@
       };
     }
 
-    function buildJudgeAreas(notes, laneWidth, offsetX) {
-      const noteAreas = notes.map((note, index) => ({
-        note,
-        index,
-        x: (note.lane - 1) * laneWidth + offsetX,
-        w: note.width * laneWidth,
-        start: note.time,
-        end: note.time
-      }));
+    function getOccupiedLanes(note) {
+      const lanes = [];
+      const startLane = note.lane;
+      const endLane = note.lane + note.width - 1;
 
-      const sorted = [...noteAreas].sort((a, b) => a.note.time - b.note.time);
-
-      for (let i = 0; i < sorted.length; i++) {
-        const current = sorted[i];
-        const judgeWindows = getJudgeWindows();
-
-        current.start = current.note.time - judgeWindows.attack;
-        current.end = current.note.time + judgeWindows.attack;
-
-        for (let j = i - 1; j >= 0; j--) {
-          const prev = sorted[j];
-
-          if (prev.end <= current.start) {
-            break;
-          }
-
-          if (!rangesOverlap(current.x, current.x + current.w, prev.x, prev.x + prev.w)) {
-            continue;
-          }
-
-          const split = (prev.note.time + current.note.time) / 2;
-          current.start = Math.max(current.start, split);
-          prev.end = Math.min(prev.end, split);
+      for (let lane = startLane; lane <= endLane; lane++) {
+        if (lane >= 1 && lane <= 16) {
+          lanes.push(lane);
         }
       }
 
-      return noteAreas;
+      return lanes;
     }
 
-    function buildCriticalSegments(notes, laneWidth, offsetX) {
+    function buildLaneJudgeSegments(notes, laneWidth, offsetX) {
       const windows = getJudgeWindows();
-      const noteRects = notes.map(note => ({
-        x: (note.lane - 1) * laneWidth + offsetX,
-        w: note.width * laneWidth
-      }));
+      const occupiedLanesList = notes.map(getOccupiedLanes);
+      const occupiedLaneSets = occupiedLanesList.map(lanes => new Set(lanes));
 
-      return notes.map((note, index) => {
-        const rect = noteRects[index];
-        const criticalHalf = note.isEx ? windows.attack : windows.justiceCritical;
-        const attackHalf = windows.attack;
-        const boundaries = [rect.x, rect.x + rect.w];
-        const overlaps = [];
+      return notes.map((note, noteIndex) => {
+        const segments = [];
+        const occupiedLanes = occupiedLanesList[noteIndex];
 
-        for (let otherIndex = 0; otherIndex < notes.length; otherIndex++) {
-          if (otherIndex === index) continue;
+        // TAPは「使用レーンのどこかで重なる最近傍」を使って、
+        // ノーツ全体で共通の所有時間を決める。
+        if (!note.isEx) {
+          let ownershipStart = note.time - windows.attack;
+          let ownershipEnd = note.time + windows.attack;
+          let nearestPrevTime = -Infinity;
+          let nearestNextTime = Infinity;
 
-          const other = notes[otherIndex];
-          const otherRect = noteRects[otherIndex];
-          const overlapStartX = Math.max(rect.x, otherRect.x);
-          const overlapEndX = Math.min(rect.x + rect.w, otherRect.x + otherRect.w);
+          for (let otherIndex = 0; otherIndex < notes.length; otherIndex++) {
+            if (otherIndex === noteIndex) continue;
 
-          if (overlapStartX >= overlapEndX) {
-            continue;
+            let overlapsAnyLane = false;
+            for (const lane of occupiedLanes) {
+              if (occupiedLaneSets[otherIndex].has(lane)) {
+                overlapsAnyLane = true;
+                break;
+              }
+            }
+            if (!overlapsAnyLane) continue;
+
+            const otherTime = notes[otherIndex].time;
+            if (otherTime < note.time && otherTime > nearestPrevTime) {
+              nearestPrevTime = otherTime;
+            }
+            if (otherTime > note.time && otherTime < nearestNextTime) {
+              nearestNextTime = otherTime;
+            }
           }
 
-          const split = (note.time + other.time) / 2;
-          const hasAttackOverlap =
-            Math.max(note.time - attackHalf, other.time - attackHalf) <
-            Math.min(note.time + attackHalf, other.time + attackHalf);
-
-          if (!hasAttackOverlap) {
-            continue;
+          if (nearestPrevTime !== -Infinity) {
+            const splitPrev = (nearestPrevTime + note.time) / 2;
+            ownershipStart = Math.max(ownershipStart, splitPrev);
+          }
+          if (nearestNextTime !== Infinity) {
+            const splitNext = (nearestNextTime + note.time) / 2;
+            ownershipEnd = Math.min(ownershipEnd, splitNext);
           }
 
-          boundaries.push(overlapStartX, overlapEndX);
-          overlaps.push({
-            startX: overlapStartX,
-            endX: overlapEndX,
-            split,
-            isEarlier: other.time < note.time,
-            isLater: other.time > note.time
-          });
+          const justiceStart = Math.max(ownershipStart, note.time - windows.justice);
+          const justiceEnd = Math.min(ownershipEnd, note.time + windows.justice);
+
+          const criticalHalf = windows.justiceCritical;
+          let criticalStart = Math.max(ownershipStart, note.time - criticalHalf);
+          let criticalEnd = Math.min(ownershipEnd, note.time + criticalHalf);
+
+          const minCriticalWidth = criticalHalf * 2;
+          if (criticalEnd - criticalStart < minCriticalWidth) {
+            criticalStart = note.time - criticalHalf;
+            criticalEnd = note.time + criticalHalf;
+          }
+
+          for (const lane of occupiedLanes) {
+            segments.push({
+              x: (lane - 1) * laneWidth + offsetX,
+              w: laneWidth,
+              ownershipStart,
+              ownershipEnd,
+              justiceStart,
+              justiceEnd,
+              criticalStart,
+              criticalEnd
+            });
+          }
+
+          return segments;
         }
 
-        const uniqueBoundaries = [...new Set(boundaries)].sort((a, b) => a - b);
-        const segments = [];
+        // ExTAPはレーンごとに最近傍を探し、レーンごとに所有時間を持つ。
+        for (const lane of occupiedLanes) {
+          let ownershipStart = note.time - windows.attack;
+          let ownershipEnd = note.time + windows.attack;
+          let nearestPrevTime = -Infinity;
+          let nearestNextTime = Infinity;
 
-        for (let i = 0; i < uniqueBoundaries.length - 1; i++) {
-          const startX = uniqueBoundaries[i];
-          const endX = uniqueBoundaries[i + 1];
-          if (endX <= startX) continue;
+          for (let otherIndex = 0; otherIndex < notes.length; otherIndex++) {
+            if (otherIndex === noteIndex) continue;
+            if (!occupiedLaneSets[otherIndex].has(lane)) continue;
 
-          const sampleX = (startX + endX) / 2;
-          let start = note.time - criticalHalf;
-          let end = note.time + criticalHalf;
-
-          for (const overlap of overlaps) {
-            if (sampleX < overlap.startX || sampleX > overlap.endX) {
-              continue;
+            const otherTime = notes[otherIndex].time;
+            if (otherTime < note.time && otherTime > nearestPrevTime) {
+              nearestPrevTime = otherTime;
             }
-
-            if (overlap.isEarlier) {
-              start = Math.max(start, overlap.split);
-            } else if (overlap.isLater) {
-              end = Math.min(end, overlap.split);
+            if (otherTime > note.time && otherTime < nearestNextTime) {
+              nearestNextTime = otherTime;
             }
           }
 
-          if (end > start) {
-            segments.push({ startX, endX, start, end });
+          if (nearestPrevTime !== -Infinity) {
+            const splitPrev = (nearestPrevTime + note.time) / 2;
+            ownershipStart = Math.max(ownershipStart, splitPrev);
           }
+          if (nearestNextTime !== Infinity) {
+            const splitNext = (nearestNextTime + note.time) / 2;
+            ownershipEnd = Math.min(ownershipEnd, splitNext);
+          }
+
+          segments.push({
+            x: (lane - 1) * laneWidth + offsetX,
+            w: laneWidth,
+            ownershipStart,
+            ownershipEnd,
+            justiceStart: null,
+            justiceEnd: null,
+            criticalStart: ownershipStart,
+            criticalEnd: ownershipEnd
+          });
         }
 
         return segments;
@@ -597,9 +613,7 @@
       const usableWidth = canvas.width - padding * 2;
       const laneWidth = usableWidth / 16;
       const offsetX = padding;
-      const judgeWindows = getJudgeWindows();
-      const judgeAreas = buildJudgeAreas(notes, laneWidth, offsetX);
-      const criticalSegmentsList = buildCriticalSegments(notes, laneWidth, offsetX);
+      const laneJudgeSegmentsList = buildLaneJudgeSegments(notes, laneWidth, offsetX);
 
       let minMeasure = Infinity;
       let maxMeasure = -Infinity;
@@ -633,6 +647,9 @@
       const maxScroll = Math.max(0, contentHeight - visibleCanvasHeight + padding * 2);
 
       scrollY = Math.max(minScroll, Math.min(maxScroll, scrollY));
+
+      const timeToY = (timeMs) =>
+        contentHeight - ((timeMs / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
 
       // =========================
       // ▼ グリッド
@@ -687,69 +704,64 @@
       // =========================
       for (let i = 0; i < notes.length; i++) {
         const n = notes[i];
-        const judgeArea = judgeAreas[i];
-        const criticalSegments = criticalSegmentsList[i];
+        const laneJudgeSegments = laneJudgeSegmentsList[i];
         const m = n.time / measureMs;
         const worldY = (m - contentStartMeasure) * pxPerMeasure;
 
         const y = contentHeight - worldY - scrollY + padding;
 
-        const x = judgeArea.x;
-        const w = judgeArea.w;
+        const x = (n.lane - 1) * laneWidth + offsetX;
+        const w = n.width * laneWidth;
 
         // ▼ 色
         const color = n.isEx ? "yellow" : "red";
 
         // ▼ 判定
         if (showAttack || showJustice || showCritical) {
-          const attackTop = contentHeight - ((judgeArea.end / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-          const attackBottom = contentHeight - ((judgeArea.start / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
+          for (const segment of laneJudgeSegments) {
+            const attackTop = timeToY(segment.ownershipEnd);
+            const attackBottom = timeToY(segment.ownershipStart);
+            const criticalTop = timeToY(segment.criticalEnd);
+            const criticalBottom = timeToY(segment.criticalStart);
 
-          const justiceTop = contentHeight - (((n.time + judgeWindows.justice) / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-          const justiceBottom = contentHeight - (((n.time - judgeWindows.justice) / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-          const criticalTopBase = n.isEx ? (n.time + judgeWindows.attack) : (n.time + judgeWindows.justiceCritical);
-          const criticalBottomBase = n.isEx ? (n.time - judgeWindows.attack) : (n.time - judgeWindows.justiceCritical);
-          const criticalTop = contentHeight - ((criticalTopBase / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-          const criticalBottom = contentHeight - ((criticalBottomBase / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-
-          if (n.isEx) {
-            // ExはJCのみ表示
-          } else {
-            const justiceDrawTop = Math.max(attackTop, justiceTop);
-            const justiceDrawBottom = Math.min(attackBottom, justiceBottom);
-            const criticalDrawTop = Math.max(attackTop, criticalTop);
-            const criticalDrawBottom = Math.min(attackBottom, criticalBottom);
-
-            if (showAttack && justiceDrawTop > attackTop) {
-              ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
-              ctx.fillRect(x, attackTop, w, justiceDrawTop - attackTop);
+            // TAP: JC -> JUSTICE -> ATTACK の順で塗る。
+            // ExTAP: JCのみ塗る。
+            if (showCritical && criticalBottom > criticalTop) {
+              ctx.fillStyle = "rgba(255, 255, 170, 0.5)";
+              ctx.fillRect(segment.x, criticalTop, segment.w, criticalBottom - criticalTop);
             }
 
-            if (showAttack && attackBottom > justiceDrawBottom) {
-              ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
-              ctx.fillRect(x, justiceDrawBottom, w, attackBottom - justiceDrawBottom);
-            }
+            if (!n.isEx && segment.justiceStart !== null && segment.justiceEnd !== null) {
+              const justiceTop = timeToY(segment.justiceEnd);
+              const justiceBottom = timeToY(segment.justiceStart);
 
-            if (showJustice && criticalDrawTop > justiceDrawTop) {
-              ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
-              ctx.fillRect(x, justiceDrawTop, w, criticalDrawTop - justiceDrawTop);
-            }
+              if (showJustice) {
+                const justiceUpperEnd = Math.min(criticalTop, justiceBottom);
+                if (justiceUpperEnd > justiceTop) {
+                  ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
+                  ctx.fillRect(segment.x, justiceTop, segment.w, justiceUpperEnd - justiceTop);
+                }
 
-            if (showJustice && justiceDrawBottom > criticalDrawBottom) {
-              ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
-              ctx.fillRect(x, criticalDrawBottom, w, justiceDrawBottom - criticalDrawBottom);
-            }
-          }
+                const justiceLowerStart = Math.max(criticalBottom, justiceTop);
+                if (justiceBottom > justiceLowerStart) {
+                  ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
+                  ctx.fillRect(segment.x, justiceLowerStart, segment.w, justiceBottom - justiceLowerStart);
+                }
+              }
 
-          if (showCritical) {
-            ctx.fillStyle = "rgba(255, 255, 170, 0.5)";
+              if (showAttack) {
+                const attackUpperEnd = Math.min(justiceTop, attackBottom);
+                if (attackUpperEnd > attackTop) {
+                  ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
+                  ctx.fillRect(segment.x, attackTop, segment.w, attackUpperEnd - attackTop);
+                }
 
-            for (const segment of criticalSegments) {
-              const segmentTop = contentHeight - ((segment.end / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-              const segmentBottom = contentHeight - ((segment.start / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-              const segmentWidth = segment.endX - segment.startX;
-
-              ctx.fillRect(segment.startX, segmentTop, segmentWidth, segmentBottom - segmentTop);
+                const attackLowerStart = Math.max(justiceBottom, attackTop);
+                if (attackBottom > attackLowerStart) {
+                  ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
+                  ctx.fillRect(segment.x, attackLowerStart, segment.w, attackBottom - attackLowerStart);
+                }
+              }
             }
           }
         }
