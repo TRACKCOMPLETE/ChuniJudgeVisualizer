@@ -589,11 +589,8 @@
       }
     }
 
-    function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
+    function createRenderModel() {
       const padding = 80;
-
       const input = document.getElementById("input").value;
       const notes = parse(input);
 
@@ -603,11 +600,9 @@
       const showCritical = isToggleChecked("toggle-show-critical");
 
       const bpm = readBpmFromInput(input, 120);
-
       const beatMs = 60000 / bpm;
       const measureMs = beatMs * 4;
 
-      // 縦方向の拡大率
       const pxPerMeasure = 1280;
 
       const usableWidth = canvas.width - padding * 2;
@@ -634,89 +629,129 @@
       const contentEndMeasure = maxMeasure + marginMeasure;
       const gridStartMeasure = Math.floor(contentStartMeasure);
       const gridEndMeasure = Math.ceil(contentEndMeasure);
-
       const contentHeight = (contentEndMeasure - contentStartMeasure) * pxPerMeasure;
 
-      // =========================
-      // ▼ スクロール範囲（上下に少し余白）
-      // =========================
+      return {
+        notes,
+        showNotes,
+        showAttack,
+        showJustice,
+        showCritical,
+        measureMs,
+        pxPerMeasure,
+        laneWidth,
+        offsetX,
+        laneJudgeSegmentsList,
+        padding,
+        contentStartMeasure,
+        gridStartMeasure,
+        gridEndMeasure,
+        contentHeight
+      };
+    }
 
-      const visibleCanvasHeight = getVisibleCanvasHeight();
+    function canExportImage(model) {
+      const hasNotes = model.notes.length > 0;
+      const hasVisibleLayer =
+        model.showNotes ||
+        model.showAttack ||
+        model.showJustice ||
+        model.showCritical;
 
-      const minScroll = 0;
-      const maxScroll = Math.max(0, contentHeight - visibleCanvasHeight + padding * 2);
+      return hasNotes && hasVisibleLayer;
+    }
 
-      scrollY = Math.max(minScroll, Math.min(maxScroll, scrollY));
+    function updateSaveButtonState(model) {
+      const saveBtn = document.getElementById("saveBtn");
+      const canSave = canExportImage(model);
+      saveBtn.disabled = !canSave;
+      saveBtn.title = canSave
+        ? ""
+        : "譜面がない、または表示項目がすべてオフのため保存できません";
+    }
+
+    function renderScene(targetCtx, targetCanvas, model, currentScrollY) {
+      targetCtx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+      targetCtx.fillStyle = "#000";
+      targetCtx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+
+      const {
+        notes,
+        showNotes,
+        showAttack,
+        showJustice,
+        showCritical,
+        measureMs,
+        pxPerMeasure,
+        laneWidth,
+        offsetX,
+        laneJudgeSegmentsList,
+        padding,
+        contentStartMeasure,
+        gridStartMeasure,
+        gridEndMeasure,
+        contentHeight
+      } = model;
 
       const timeToY = (timeMs) =>
-        contentHeight - ((timeMs / measureMs) - contentStartMeasure) * pxPerMeasure - scrollY + padding;
-
-      // =========================
-      // ▼ グリッド
-      // =========================
+        contentHeight - ((timeMs / measureMs) - contentStartMeasure) * pxPerMeasure - currentScrollY + padding;
 
       for (let i = 0; i <= 16; i++) {
         const x = padding + i * laneWidth;
 
-        ctx.lineWidth = (i === 0 || i === 16) ? 3 : 1;
-        ctx.strokeStyle = (i === 0 || i === 16)
+        targetCtx.lineWidth = (i === 0 || i === 16) ? 3 : 1;
+        targetCtx.strokeStyle = (i === 0 || i === 16)
           ? "rgba(255,255,255,0.5)"
           : "rgba(255,255,255,0.2)";
 
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
+        targetCtx.beginPath();
+        targetCtx.moveTo(x, 0);
+        targetCtx.lineTo(x, targetCanvas.height);
+        targetCtx.stroke();
       }
 
       for (let m = gridStartMeasure; m <= gridEndMeasure; m++) {
 
         let worldY = (m - contentStartMeasure) * pxPerMeasure;
 
-        // paddingぶん表示位置を調整
-        let y = contentHeight - worldY - scrollY + padding;
+        let y = contentHeight - worldY - currentScrollY + padding;
 
-        if (y >= -padding && y <= canvas.height + padding) {
-          ctx.lineWidth = 2;
-          ctx.strokeStyle = "rgba(255,255,255,0.4)";
-          ctx.beginPath();
-          ctx.moveTo(padding, y);
-          ctx.lineTo(canvas.width - padding, y);
-          ctx.stroke();
+        if (y >= -padding && y <= targetCanvas.height + padding) {
+          targetCtx.lineWidth = 2;
+          targetCtx.strokeStyle = "rgba(255,255,255,0.4)";
+          targetCtx.beginPath();
+          targetCtx.moveTo(padding, y);
+          targetCtx.lineTo(targetCanvas.width - padding, y);
+          targetCtx.stroke();
         }
 
         for (let b = 1; b < 4; b++) {
           const subY = y - b * (pxPerMeasure / 4);
 
-          if (subY >= -padding && subY <= canvas.height + padding) {
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = "rgba(255,255,255,0.15)";
-            ctx.beginPath();
-            ctx.moveTo(padding, subY);
-            ctx.lineTo(canvas.width - padding, subY);
-            ctx.stroke();
+          if (subY >= -padding && subY <= targetCanvas.height + padding) {
+            targetCtx.lineWidth = 1;
+            targetCtx.strokeStyle = "rgba(255,255,255,0.15)";
+            targetCtx.beginPath();
+            targetCtx.moveTo(padding, subY);
+            targetCtx.lineTo(targetCanvas.width - padding, subY);
+            targetCtx.stroke();
           }
         }
       }
 
-      // =========================
-      // ▼ ノーツ
-      // =========================
       for (let i = 0; i < notes.length; i++) {
         const n = notes[i];
         const laneJudgeSegments = laneJudgeSegmentsList[i];
         const m = n.time / measureMs;
         const worldY = (m - contentStartMeasure) * pxPerMeasure;
 
-        const y = contentHeight - worldY - scrollY + padding;
+        const y = contentHeight - worldY - currentScrollY + padding;
 
         const x = (n.lane - 1) * laneWidth + offsetX;
         const w = n.width * laneWidth;
 
-        // ▼ 色
         const color = n.isEx ? "yellow" : "red";
 
-        // ▼ 判定
         if (showAttack || showJustice || showCritical) {
           for (const segment of laneJudgeSegments) {
             const attackTop = timeToY(segment.ownershipEnd);
@@ -724,11 +759,9 @@
             const criticalTop = timeToY(segment.criticalEnd);
             const criticalBottom = timeToY(segment.criticalStart);
 
-            // TAP: JC -> JUSTICE -> ATTACK の順で塗る。
-            // ExTAP: JCのみ塗る。
             if (showCritical && criticalBottom > criticalTop) {
-              ctx.fillStyle = "rgba(255, 255, 170, 0.5)";
-              ctx.fillRect(segment.x, criticalTop, segment.w, criticalBottom - criticalTop);
+              targetCtx.fillStyle = "rgba(255, 255, 170, 0.5)";
+              targetCtx.fillRect(segment.x, criticalTop, segment.w, criticalBottom - criticalTop);
             }
 
             if (!n.isEx && segment.justiceStart !== null && segment.justiceEnd !== null) {
@@ -738,58 +771,75 @@
               if (showJustice) {
                 const justiceUpperEnd = Math.min(criticalTop, justiceBottom);
                 if (justiceUpperEnd > justiceTop) {
-                  ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
-                  ctx.fillRect(segment.x, justiceTop, segment.w, justiceUpperEnd - justiceTop);
+                  targetCtx.fillStyle = "rgba(255, 165, 0, 0.5)";
+                  targetCtx.fillRect(segment.x, justiceTop, segment.w, justiceUpperEnd - justiceTop);
                 }
 
                 const justiceLowerStart = Math.max(criticalBottom, justiceTop);
                 if (justiceBottom > justiceLowerStart) {
-                  ctx.fillStyle = "rgba(255, 165, 0, 0.5)";
-                  ctx.fillRect(segment.x, justiceLowerStart, segment.w, justiceBottom - justiceLowerStart);
+                  targetCtx.fillStyle = "rgba(255, 165, 0, 0.5)";
+                  targetCtx.fillRect(segment.x, justiceLowerStart, segment.w, justiceBottom - justiceLowerStart);
                 }
               }
 
               if (showAttack) {
                 const attackUpperEnd = Math.min(justiceTop, attackBottom);
                 if (attackUpperEnd > attackTop) {
-                  ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
-                  ctx.fillRect(segment.x, attackTop, segment.w, attackUpperEnd - attackTop);
+                  targetCtx.fillStyle = "rgba(0, 255, 120, 0.5)";
+                  targetCtx.fillRect(segment.x, attackTop, segment.w, attackUpperEnd - attackTop);
                 }
 
                 const attackLowerStart = Math.max(justiceBottom, attackTop);
                 if (attackBottom > attackLowerStart) {
-                  ctx.fillStyle = "rgba(0, 255, 120, 0.5)";
-                  ctx.fillRect(segment.x, attackLowerStart, segment.w, attackBottom - attackLowerStart);
+                  targetCtx.fillStyle = "rgba(0, 255, 120, 0.5)";
+                  targetCtx.fillRect(segment.x, attackLowerStart, segment.w, attackBottom - attackLowerStart);
                 }
               }
             }
           }
         }
 
-        // ▼ ノーツ（角丸）
         if (showNotes) {
-          ctx.fillStyle = color;
-          roundRect(ctx, x, y - 5, w, 10, 4);
-          ctx.fill();
+          targetCtx.fillStyle = color;
+          roundRect(targetCtx, x, y - 5, w, 10, 4);
+          targetCtx.fill();
         }
 
-        // ▼ ホールド
         if (n.hold > 0) {
           const holdMeasure = n.hold / 4;
           const holdHeight = holdMeasure * pxPerMeasure;
 
-          ctx.fillStyle = "orange";
+          targetCtx.fillStyle = "orange";
           roundRect(
-            ctx,
+            targetCtx,
             x,
             y - holdHeight,
             w,
             holdHeight,
             4
           );
-          ctx.fill();
+          targetCtx.fill();
         }
       }
+    }
+
+    function draw() {
+      const model = createRenderModel();
+      const padding = model.padding;
+
+      // =========================
+      // ▼ スクロール範囲（上下に少し余白）
+      // =========================
+
+      const visibleCanvasHeight = getVisibleCanvasHeight();
+
+      const minScroll = 0;
+      const maxScroll = Math.max(0, model.contentHeight - visibleCanvasHeight + padding * 2);
+
+      scrollY = Math.max(minScroll, Math.min(maxScroll, scrollY));
+
+      renderScene(ctx, canvas, model, scrollY);
+      updateSaveButtonState(model);
     }
 
     document.addEventListener("input", draw);
@@ -801,7 +851,21 @@
     });
 
     document.getElementById("saveBtn").onclick = () => {
-      const url = canvas.toDataURL();
+      const model = createRenderModel();
+
+      if (!canExportImage(model)) {
+        alert("譜面がない、または表示項目がすべてオフのため保存できません");
+        return;
+      }
+
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = canvas.width;
+      exportCanvas.height = Math.max(1, Math.ceil(model.contentHeight + model.padding * 2));
+      const exportCtx = exportCanvas.getContext("2d");
+
+      renderScene(exportCtx, exportCanvas, model, 0);
+
+      const url = exportCanvas.toDataURL();
       const a = document.createElement("a");
       a.href = url;
       a.download = "chart.png";
